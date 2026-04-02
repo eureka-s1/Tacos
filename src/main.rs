@@ -116,7 +116,46 @@ pub extern "C" fn main(hart_id: usize, dtb: usize) -> ! {
 
     #[cfg(feature = "shell")]
     {
-        // TODO: Lab 0
+        use alloc::string::String;
+        kprintln!("Tacos Kernel Monitor starting...");
+
+        loop {
+            kprint!("PKUOS> ");
+            let mut input = String::new();
+
+            loop {
+                let c = sbi::console_getchar();
+                if c == 0 {
+                    continue;
+                }
+
+                let ch = c as u8 as char;
+
+                if ch == '\r' || ch == '\n' {
+                    break;
+                } else if c == 8 || c == 127 {
+                    // Handle backspace
+                    if !input.is_empty() {
+                        input.pop();
+                        kprint!("\u{0008} \u{0008}");
+                    }
+                } else {
+                    input.push(ch);
+                }
+            }
+
+            let command = input.trim();
+            if command == "whoami" {
+                kprintln!("2300012969");
+            } else if command == "exit" {
+                kprintln!("Exiting monitor...");
+                break;
+            } else if command.is_empty() {
+                continue;
+            } else {
+                kprintln!("Invalid command");
+            }
+        }
     }
 
     DISKFS.unmount();
