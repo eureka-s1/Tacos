@@ -58,4 +58,4 @@
 - 集成运行测试仍受限：本环境缺少 `qemu-system-riscv64`。
 
 ### Commit
-- `pending`
+- `d7992a1` (`lab1: implement priority donation for locks`)
