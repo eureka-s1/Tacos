@@ -10,6 +10,19 @@ pub use self::manager::Manager;
 pub(self) use self::scheduler::{Schedule, Scheduler};
 
 use alloc::sync::Arc;
+use alloc::vec::Vec;
+
+use crate::sbi;
+use crate::sync::{Intr, Lazy, Mutex as SyncMutex};
+
+#[derive(Clone)]
+struct SleepEntry {
+    wake_tick: i64,
+    thread: Arc<Thread>,
+}
+
+static SLEEP_LIST: Lazy<SyncMutex<Vec<SleepEntry>, Intr>> =
+    Lazy::new(|| SyncMutex::new(Vec::new()));
 
 /// Create a new thread
 pub fn spawn<F>(name: &'static str, f: F) -> Arc<Thread>
@@ -79,11 +92,44 @@ pub fn get_priority() -> u32 {
 
 /// (Lab1) Make the current thread sleep for the given ticks.
 pub fn sleep(ticks: i64) {
-    use crate::sbi::timer::{timer_elapsed, timer_ticks};
+    use crate::sbi::timer::timer_ticks;
 
-    let start = timer_ticks();
+    if ticks <= 0 {
+        return;
+    }
 
-    while timer_elapsed(start) < ticks {
-        schedule();
+    let wake_tick = timer_ticks() + ticks;
+    let old = sbi::interrupt::set(false);
+
+    {
+        let mut sleepers = SLEEP_LIST.lock();
+        let current = current();
+        let idx = sleepers.partition_point(|entry| entry.wake_tick <= wake_tick);
+        sleepers.insert(
+            idx,
+            SleepEntry {
+                wake_tick,
+                thread: current,
+            },
+        );
+    }
+
+    block();
+    sbi::interrupt::set(old);
+}
+
+pub(crate) fn wake_sleeping_threads() {
+    let now = crate::sbi::timer::timer_ticks();
+    let due = {
+        let mut sleepers = SLEEP_LIST.lock();
+        let count = sleepers.partition_point(|entry| entry.wake_tick <= now);
+        sleepers
+            .drain(0..count)
+            .map(|entry| entry.thread)
+            .collect::<Vec<_>>()
+    };
+
+    for thread in due {
+        wake_up(thread);
     }
 }
