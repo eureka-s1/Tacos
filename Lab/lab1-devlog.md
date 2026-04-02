@@ -37,4 +37,25 @@
 - 集成运行测试受限：本环境缺少 `qemu-system-riscv64`。
 
 ### Commit
+- `64bd132` (`lab1: add priority scheduler and prioritized waiters`)
+
+### 阶段 3：Priority Donation
+- 线程新增 `base_priority`、`waiting_lock`、`donations` 字段，区分基准优先级和有效优先级。
+- 新增 donation 维护逻辑：按锁记录捐赠、支持嵌套传播、按锁释放时撤销。
+- `Sleep` 锁接入 donation：在 `acquire` 等待前触发捐赠传播，在 `release` 时撤销该锁相关捐赠并重算优先级。
+- `set_priority` 改为更新 `base_priority` 后重算有效优先级，避免覆盖捐赠优先级。
+- 新增锁持有者映射，支持沿 `waiting_lock` 链进行嵌套 donation。
+
+### 验证
+- `cargo check --features test-donation-one` 通过。
+- `cargo check --features test-donation-two` 通过。
+- `cargo check --features test-donation-three` 通过。
+- `cargo check --features test-donation-nest` 通过。
+- `cargo check --features test-donation-lower` 通过。
+- `cargo check --features test-donation-chain` 通过。
+- `cargo check --features test-donation-sema` 通过。
+- 额外检查：`cargo check --features test-priority-alarm` 通过。
+- 集成运行测试仍受限：本环境缺少 `qemu-system-riscv64`。
+
+### Commit
 - `pending`

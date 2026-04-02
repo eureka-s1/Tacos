@@ -2,6 +2,7 @@
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::arch::global_asm;
 use core::fmt::{self, Debug};
 use core::sync::atomic::{AtomicIsize, AtomicU32, Ordering::SeqCst};
@@ -21,6 +22,13 @@ pub const MAGIC: usize = 0xdeadbeef;
 
 pub type Mutex<T> = crate::sync::Mutex<T, crate::sync::Intr>;
 
+#[derive(Clone)]
+pub struct Donation {
+    pub donor_tid: isize,
+    pub lock_id: usize,
+    pub priority: u32,
+}
+
 /* --------------------------------- Thread --------------------------------- */
 /// All data of a kernel thread
 #[repr(C)]
@@ -30,7 +38,10 @@ pub struct Thread {
     stack: usize,
     status: Mutex<Status>,
     context: Mutex<Context>,
+    pub base_priority: AtomicU32,
     pub priority: AtomicU32,
+    pub waiting_lock: Mutex<Option<usize>>,
+    pub donations: Mutex<Vec<Donation>>,
     pub userproc: Option<UserProc>,
     pub pagetable: Option<Mutex<PageTable>>,
 }
@@ -53,7 +64,10 @@ impl Thread {
             stack,
             status: Mutex::new(Status::Ready),
             context: Mutex::new(Context::new(stack, entry)),
+            base_priority: AtomicU32::new(priority.clamp(PRI_MIN, PRI_MAX)),
             priority: AtomicU32::new(priority.clamp(PRI_MIN, PRI_MAX)),
+            waiting_lock: Mutex::new(None),
+            donations: Mutex::new(Vec::new()),
             userproc,
             pagetable: pagetable.map(Mutex::new),
         }

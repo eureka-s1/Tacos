@@ -30,6 +30,23 @@ fn clamp_priority(priority: u32) -> u32 {
     priority.clamp(PRI_MIN, PRI_MAX)
 }
 
+fn effective_priority(thread: &Arc<Thread>) -> u32 {
+    let base = thread.base_priority.load(SeqCst);
+    let donated = thread
+        .donations
+        .lock()
+        .iter()
+        .map(|d| d.priority)
+        .max()
+        .unwrap_or(PRI_MIN);
+    base.max(donated)
+}
+
+fn refresh_effective_priority(thread: &Arc<Thread>) -> u32 {
+    let next = effective_priority(thread);
+    thread.priority.swap(next, SeqCst)
+}
+
 /// Create a new thread
 pub fn spawn<F>(name: &'static str, f: F) -> Arc<Thread>
 where
@@ -90,12 +107,14 @@ pub fn wake_up(thread: Arc<Thread>) {
 
 /// (Lab1) Sets the current thread's priority to a given value
 pub fn set_priority(priority: u32) {
-    let priority = clamp_priority(priority);
+    let base = clamp_priority(priority);
     let current = current();
     let old = sbi::interrupt::set(false);
-    let previous = current.priority.swap(priority, SeqCst);
+    current.base_priority.store(base, SeqCst);
+    let previous = refresh_effective_priority(&current);
+    let current_effective = current.priority.load(SeqCst);
 
-    if priority < previous {
+    if current_effective < previous {
         schedule();
     }
 
@@ -149,4 +168,52 @@ pub(crate) fn wake_sleeping_threads() {
     for thread in due {
         wake_up(thread);
     }
+}
+
+pub(crate) fn donate_for_lock(lock_id: usize) {
+    let donor = current();
+    let donor_tid = donor.id();
+    let mut donated_priority = donor.priority.load(SeqCst);
+    let mut waiting_lock = Some(lock_id);
+
+    while let Some(lock_id) = waiting_lock {
+        let Some(holder) = crate::sync::sleep::holder_by_id(lock_id) else {
+            break;
+        };
+
+        if holder.id() == donor_tid {
+            break;
+        }
+
+        {
+            let mut donations = holder.donations.lock();
+            if let Some(entry) = donations
+                .iter_mut()
+                .find(|entry| entry.donor_tid == donor_tid && entry.lock_id == lock_id)
+            {
+                entry.priority = donated_priority;
+            } else {
+                donations.push(Donation {
+                    donor_tid,
+                    lock_id,
+                    priority: donated_priority,
+                });
+            }
+        }
+
+        refresh_effective_priority(&holder);
+        donated_priority = holder.priority.load(SeqCst);
+        waiting_lock = *holder.waiting_lock.lock();
+    }
+}
+
+pub(crate) fn remove_lock_donations(thread: &Arc<Thread>, lock_id: usize) -> (u32, u32) {
+    let before = thread.priority.load(SeqCst);
+    thread
+        .donations
+        .lock()
+        .retain(|entry| entry.lock_id != lock_id);
+    let _old = refresh_effective_priority(thread);
+    let after = thread.priority.load(SeqCst);
+    (before, after)
 }
