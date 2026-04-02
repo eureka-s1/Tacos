@@ -42,13 +42,14 @@
 //! ```
 //!
 
-use alloc::collections::VecDeque;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
 use core::cell::RefCell;
 
 use crate::sync::{Lock, MutexGuard, Semaphore};
+use crate::thread;
 
-pub struct Condvar(RefCell<VecDeque<Arc<Semaphore>>>);
+pub struct Condvar(RefCell<BTreeMap<u32, VecDeque<Arc<Semaphore>>>>);
 
 unsafe impl Sync for Condvar {}
 unsafe impl Send for Condvar {}
@@ -60,7 +61,12 @@ impl Condvar {
 
     pub fn wait<T, L: Lock>(&self, guard: &mut MutexGuard<'_, T, L>) {
         let sema = Arc::new(Semaphore::new(0));
-        self.0.borrow_mut().push_front(sema.clone());
+        let priority = thread::get_priority();
+        self.0
+            .borrow_mut()
+            .entry(priority)
+            .or_default()
+            .push_front(sema.clone());
 
         guard.release();
         sema.down();
@@ -69,14 +75,45 @@ impl Condvar {
 
     /// Wake up one thread from the waiting list
     pub fn notify_one(&self) {
-        if let Some(sema) = self.0.borrow_mut().pop_back() {
+        let sema = {
+            let mut waiters = self.0.borrow_mut();
+            let max_priority = waiters.keys().next_back().copied();
+            max_priority.and_then(|priority| {
+                let queue = waiters.get_mut(&priority).unwrap();
+                let sema = queue.pop_back();
+                if queue.is_empty() {
+                    waiters.remove(&priority);
+                }
+                sema
+            })
+        };
+
+        if let Some(sema) = sema {
             sema.up();
         }
     }
 
     /// Wake up all waiting threads
     pub fn notify_all(&self) {
-        self.0.borrow().iter().for_each(|s| s.up());
-        self.0.borrow_mut().clear();
+        loop {
+            let sema = {
+                let mut waiters = self.0.borrow_mut();
+                let max_priority = waiters.keys().next_back().copied();
+                max_priority.and_then(|priority| {
+                    let queue = waiters.get_mut(&priority).unwrap();
+                    let sema = queue.pop_back();
+                    if queue.is_empty() {
+                        waiters.remove(&priority);
+                    }
+                    sema
+                })
+            };
+
+            if let Some(sema) = sema {
+                sema.up();
+            } else {
+                break;
+            }
+        }
     }
 }

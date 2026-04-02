@@ -1,6 +1,7 @@
-use alloc::collections::VecDeque;
+use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
 use core::cell::{Cell, RefCell};
+use core::sync::atomic::Ordering::SeqCst;
 
 use crate::sbi;
 use crate::thread::{self, Thread};
@@ -16,7 +17,7 @@ use crate::thread::{self, Thread};
 #[derive(Clone)]
 pub struct Semaphore {
     value: Cell<usize>,
-    waiters: RefCell<VecDeque<Arc<Thread>>>,
+    waiters: RefCell<BTreeMap<u32, VecDeque<Arc<Thread>>>>,
 }
 
 unsafe impl Sync for Semaphore {}
@@ -27,7 +28,7 @@ impl Semaphore {
     pub const fn new(n: usize) -> Self {
         Semaphore {
             value: Cell::new(n),
-            waiters: RefCell::new(VecDeque::new()),
+            waiters: RefCell::new(BTreeMap::new()),
         }
     }
 
@@ -37,8 +38,13 @@ impl Semaphore {
 
         // Is semaphore available?
         while self.value() == 0 {
-            // `push_front` ensures to wake up threads in a fifo manner
-            self.waiters.borrow_mut().push_front(thread::current());
+            let current = thread::current();
+            let priority = current.priority.load(SeqCst);
+            self.waiters
+                .borrow_mut()
+                .entry(priority)
+                .or_default()
+                .push_front(current);
 
             // Block the current thread until it's awakened by an `up` operation
             thread::block();
@@ -54,10 +60,26 @@ impl Semaphore {
         let count = self.value.replace(self.value() + 1);
 
         // Check if we need to wake up a sleeping waiter
-        if let Some(thread) = self.waiters.borrow_mut().pop_back() {
-            assert_eq!(count, 0);
+        let woken = {
+            let mut waiters = self.waiters.borrow_mut();
+            let max_priority = waiters.keys().next_back().copied();
+            max_priority.and_then(|priority| {
+                let queue = waiters.get_mut(&priority).unwrap();
+                let thread = queue.pop_back();
+                if queue.is_empty() {
+                    waiters.remove(&priority);
+                }
+                thread
+            })
+        };
 
-            thread::wake_up(thread.clone());
+        if let Some(thread) = woken {
+            assert_eq!(count, 0);
+            let thread_priority = thread.priority.load(SeqCst);
+            thread::wake_up(thread);
+            if old && thread_priority > thread::get_priority() {
+                thread::schedule();
+            }
         }
 
         sbi::interrupt::set(old);

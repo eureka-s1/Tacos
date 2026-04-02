@@ -53,7 +53,7 @@ impl Thread {
             stack,
             status: Mutex::new(Status::Ready),
             context: Mutex::new(Context::new(stack, entry)),
-            priority: AtomicU32::new(priority),
+            priority: AtomicU32::new(priority.clamp(PRI_MIN, PRI_MAX)),
             userproc,
             pagetable: pagetable.map(Mutex::new),
         }
@@ -134,7 +134,7 @@ impl Builder {
     }
 
     pub fn priority(mut self, priority: u32) -> Self {
-        self.priority = priority;
+        self.priority = priority.clamp(PRI_MIN, PRI_MAX);
         self
     }
 
@@ -181,6 +181,10 @@ impl Builder {
         kprintln!("[THREAD] create {:?}", new_thread);
 
         Manager::get().register(new_thread.clone());
+
+        if new_thread.priority.load(SeqCst) > super::get_priority() {
+            super::schedule();
+        }
 
         // Off you go
         new_thread

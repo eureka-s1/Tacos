@@ -11,6 +11,7 @@ pub(self) use self::scheduler::{Schedule, Scheduler};
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::Ordering::SeqCst;
 
 use crate::sbi;
 use crate::sync::{Intr, Lazy, Mutex as SyncMutex};
@@ -23,6 +24,11 @@ struct SleepEntry {
 
 static SLEEP_LIST: Lazy<SyncMutex<Vec<SleepEntry>, Intr>> =
     Lazy::new(|| SyncMutex::new(Vec::new()));
+
+#[inline]
+fn clamp_priority(priority: u32) -> u32 {
+    priority.clamp(PRI_MIN, PRI_MAX)
+}
 
 /// Create a new thread
 pub fn spawn<F>(name: &'static str, f: F) -> Arc<Thread>
@@ -83,11 +89,22 @@ pub fn wake_up(thread: Arc<Thread>) {
 }
 
 /// (Lab1) Sets the current thread's priority to a given value
-pub fn set_priority(_priority: u32) {}
+pub fn set_priority(priority: u32) {
+    let priority = clamp_priority(priority);
+    let current = current();
+    let old = sbi::interrupt::set(false);
+    let previous = current.priority.swap(priority, SeqCst);
+
+    if priority < previous {
+        schedule();
+    }
+
+    sbi::interrupt::set(old);
+}
 
 /// (Lab1) Returns the current thread's effective priority.
 pub fn get_priority() -> u32 {
-    0
+    current().priority.load(SeqCst)
 }
 
 /// (Lab1) Make the current thread sleep for the given ticks.
